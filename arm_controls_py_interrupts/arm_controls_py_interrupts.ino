@@ -88,6 +88,12 @@ int16_t MidF[5] = {2000, 0, 2000, 2000, OPPOSE_MAX};
 int16_t ThumbUp[5] = {2000, 2000, 2000, 0, 0};
 bool command_received = false;
 
+float anglesT_1[] = {0,0,0};
+float anglesT[] = {0,0,0};
+bool initIMUCounter = true;
+float previousTimeIMU = 0;
+float CurrentTimeIMU = 0;
+float dt = 0.0;
 int status;
 
 void setup() {
@@ -97,7 +103,7 @@ void setup() {
 
   // Defining an IMU object
   IMU.begin();
-  IMU.setSrd(9); // Setting IMU data outpur rate to 10Hz (1000 / (1 + 99))
+//  IMU.setSrd(9); // Setting IMU data outpur rate to 10Hz (1000 / (1 + 99))
 //  IMU.enableDataReadyInterrupt(); // Enabling the interrupt pin on the MPU9250
 //  pinMode(22,INPUT); // attaching the interrupt to microcontroller pin 2
 //  attachInterrupt(22,getIMU,RISING); // Calling getIMU every time the interrupt fires
@@ -138,6 +144,130 @@ void loop() {
   Move(); // commands motor motion
   //Print(); // prints output to serial
 //  Serial.println(imu_on);
+  getArmOrientation();
+}
+
+float CalibrateAccelerometer(float * accelData){
+   float ax_scale = 1.004;
+   float ax_bias = 2.1;
+   float ay_scale = 1.0004;
+   float ay_bias = 2.55;
+   float az_scale = 1.1;
+   float az_bias = 2.1;
+   accelData[0] = (-accelData[0] - ax_bias) / ax_scale;
+   accelData[1] = (-accelData[1] - ay_bias) / ay_scale;
+   accelData[2] = (accelData[2] - az_bias) / az_scale;
+}
+
+float OrientationFromAccelerometer(float * accelOrientation){
+  float ay = IMU.getAccelX_mss();
+  float ax = IMU.getAccelY_mss();
+  float az = IMU.getAccelZ_mss();
+  float accelData[3]={ax, ay, az};
+  CalibrateAccelerometer(accelData);
+  ax = accelData[0];
+  ay = accelData[1];
+  az = accelData[2];
+  float theta_y = -((atan2(az, ay) * (180 / PI)) + 90);
+  float theta_x = -((atan2(-az, ax) * (180 / PI)) - 90);
+  float theta_z = atan2(ay, ax) * (180 / PI);
+  accelOrientation[0] = theta_x;
+  accelOrientation[1] = theta_y;
+  accelOrientation[2] = theta_z;
+}
+
+float CalibrateMagnetometer(float * magCalibrated){
+  float mx = IMU.getMagX_uT();
+  float my = IMU.getMagY_uT();
+  float mz = IMU.getMagZ_uT();
+  float A[3][3] = {{0.9953, -0.0146, 0.0201},
+                   {-0.0146, 1.0135, 0.0253},
+                   {0.0201, 0.0253, 0.9926}};
+  float b[]= {57.4634, 78.6249, 9.6638};
+  float mag_uncalib[] = {mx, my, mz};
+  float mag_minus_bias[] = {0,0,0};
+  for (int i = 0; i < 3; i++) {
+    mag_minus_bias[i] =  mag_uncalib[i] - b[i];
+  }
+  float mag_calib[] = {0,0,0};
+  for (int i = 0; i < 3; i++) {
+    float sum = 0;
+    for (int j = 0; j < 3; j++) {
+      sum = sum + A[j][i]*mag_minus_bias[j];
+    }
+    mag_calib[i] = sum;
+  }
+  float memory = mag_calib[1];
+  mag_calib[1] = mag_calib[0];
+  mag_calib[0] = memory;
+  mag_calib[2] = -mag_calib[2];
+}
+  
+float getArmOrientation(){
+  CurrentTimeIMU = micros()/1000000.0;
+//  CurrentTimeIMU = millis();
+  if (initIMUCounter){
+    previousTimeIMU = CurrentTimeIMU;
+    initIMUCounter = false;
+    }
+  dt = (CurrentTimeIMU - previousTimeIMU);
+  previousTimeIMU = CurrentTimeIMU;
+  
+  IMU.readSensor();
+  
+  float gy = IMU.getGyroX_rads();
+  float gx = IMU.getGyroY_rads();
+  float gz = IMU.getGyroZ_rads();
+
+  // Gyro Angles
+  float gyroOrientation[3]={0,0,0};
+  float gyroData[3]={gx,gy,gz};
+  for (int j = 0; j < 3; j++) {
+      gyroOrientation[j] = gyroData[j]*dt*(180/PI);
+    }
+ 
+  // Magnetometer Angles
+  float magCalibrated[3]={0,0,0};
+  CalibrateMagnetometer(magCalibrated);
+  float mx = magCalibrated[0];
+  float my = magCalibrated[1];
+  float mz = magCalibrated[2];
+
+  // Accelerometer Angles
+  float accelOrientation[3]={0,0,0};
+  OrientationFromAccelerometer(accelOrientation);
+
+  // Complementary Filter
+  float G = 0.9;
+  float A = 0.1;
+  
+  for (int j = 0; j < 3; j++) {
+    anglesT[j] = (anglesT_1[j] + gyroOrientation[j])*G + A*accelOrientation[j];
+    anglesT_1[j] = anglesT[j];
+  }
+
+  
+  Serial.print(accelOrientation[0]);
+  Serial.print("\t");
+  Serial.print(accelOrientation[1]);
+  Serial.print("\t");
+  Serial.print(accelOrientation[2]);
+  Serial.print("\t");
+  Serial.print("\t");
+  Serial.print(gyroOrientation[0],6);
+  Serial.print("\t");
+  Serial.print(gyroOrientation[1],6);
+  Serial.print("\t");
+  Serial.print(gyroOrientation[2],6);
+  Serial.print("\t");
+  Serial.print("\t");
+  Serial.print(anglesT[0],6);
+  Serial.print("\t");
+  Serial.print(anglesT[1],6);
+  Serial.print("\t");
+  Serial.print(anglesT[2],6);
+  Serial.print("\t");
+  Serial.println(dt,6);
 }
 
 void getIMU(){ 
