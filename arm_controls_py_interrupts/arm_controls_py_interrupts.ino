@@ -33,6 +33,7 @@ MPU9250 IMU(Wire1,0x68);
 #define SampleTime 10 // 100 Hz - How fast the encoders are read
 #define UpdateTime 20 // 50 Hz - How fast the motors are updating
 #define PrintTime 100 // 10 Hz - How fast we print to serial
+#define IMUReadTime 100 // 10 Hz - How fast we print to serial
 
 unsigned long CurrentTime;
 unsigned long LastSampleTime;
@@ -94,6 +95,10 @@ bool initIMUCounter = true;
 float previousTimeIMU = 0;
 float CurrentTimeIMU = 0;
 float dt = 0.0;
+float theta_pitch = 0;
+float theta_roll = 0;
+float theta_yaw = 0;
+
 int status;
 
 void setup() {
@@ -198,9 +203,9 @@ float CalibrateMagnetometer(float * magCalibrated){
     mag_calib[i] = sum;
   }
   float memory = mag_calib[1];
-  mag_calib[1] = mag_calib[0];
-  mag_calib[0] = memory;
-  mag_calib[2] = -mag_calib[2];
+  magCalibrated[1] = mag_calib[0];
+  magCalibrated[0] = memory;
+  magCalibrated[2] = -mag_calib[2];
 }
   
 float getArmOrientation(){
@@ -211,63 +216,67 @@ float getArmOrientation(){
     initIMUCounter = false;
     }
   dt = (CurrentTimeIMU - previousTimeIMU);
-  previousTimeIMU = CurrentTimeIMU;
+  if (dt >= IMUReadTime/1000){
+    previousTimeIMU = CurrentTimeIMU;
+    
+    IMU.readSensor();
+    
+    float gy = IMU.getGyroX_rads();
+    float gx = IMU.getGyroY_rads();
+    float gz = IMU.getGyroZ_rads();
   
-  IMU.readSensor();
+    // Gyro Angles
+    float gyroOrientation[3]={0,0,0};
+    float gyroData[3]={gx,gy,gz};
+    for (int j = 0; j < 3; j++) {
+        gyroOrientation[j] = gyroData[j]*dt*(180/PI);
+      }
+   
+    // Magnetometer Angles
+    float magCalibrated[3]={0,0,0};
+    CalibrateMagnetometer(magCalibrated);
+    float mx = magCalibrated[0];
+    float my = magCalibrated[1];
+    float mz = magCalibrated[2];
   
-  float gy = IMU.getGyroX_rads();
-  float gx = IMU.getGyroY_rads();
-  float gz = IMU.getGyroZ_rads();
-
-  // Gyro Angles
-  float gyroOrientation[3]={0,0,0};
-  float gyroData[3]={gx,gy,gz};
-  for (int j = 0; j < 3; j++) {
-      gyroOrientation[j] = gyroData[j]*dt*(180/PI);
+    // Accelerometer Angles
+    float accelOrientation[3]={0,0,0};
+    OrientationFromAccelerometer(accelOrientation);
+  
+    // Complementary Filter
+    float G = 0.9;
+    float A = 0.1;
+    
+    for (int j = 0; j < 3; j++) {
+      anglesT[j] = (anglesT_1[j] + gyroOrientation[j])*G + A*accelOrientation[j];
+      anglesT_1[j] = anglesT[j];
     }
- 
-  // Magnetometer Angles
-  float magCalibrated[3]={0,0,0};
-  CalibrateMagnetometer(magCalibrated);
-  float mx = magCalibrated[0];
-  float my = magCalibrated[1];
-  float mz = magCalibrated[2];
+    theta_roll = anglesT[0]*(PI/180.0);
+    theta_pitch = anglesT[1]*(PI/180.0);
 
-  // Accelerometer Angles
-  float accelOrientation[3]={0,0,0};
-  OrientationFromAccelerometer(accelOrientation);
-
-  // Complementary Filter
-  float G = 0.9;
-  float A = 0.1;
+    float x_heading = mx * cos(theta_roll) + mz * (sin(theta_roll));
+    float y_heading = mx * (sin(theta_roll) * sin(theta_pitch)) + my * cos(theta_pitch) - mz * (
+                cos(theta_roll) * sin(theta_pitch));
+    theta_roll = theta_roll * (180 / PI);
+    theta_pitch = theta_pitch * (180 / PI);
+    theta_yaw = atan2(y_heading, x_heading) * (180 / PI);
   
-  for (int j = 0; j < 3; j++) {
-    anglesT[j] = (anglesT_1[j] + gyroOrientation[j])*G + A*accelOrientation[j];
-    anglesT_1[j] = anglesT[j];
+    
+//    Serial.print(accelOrientation[0]);
+//    Serial.print("\t");
+//    Serial.print(accelOrientation[1]);
+//    Serial.print("\t");
+//    Serial.print(accelOrientation[2]);
+//    Serial.print("\t");
+//    Serial.print("\t");
+//    Serial.print(gyroOrientation[0],6);
+//    Serial.print("\t");
+//    Serial.print(gyroOrientation[1],6);
+//    Serial.print("\t");
+//    Serial.print(gyroOrientation[2],6);
+//    Serial.print("\t");
+//    Serial.print("\t");
   }
-
-  
-  Serial.print(accelOrientation[0]);
-  Serial.print("\t");
-  Serial.print(accelOrientation[1]);
-  Serial.print("\t");
-  Serial.print(accelOrientation[2]);
-  Serial.print("\t");
-  Serial.print("\t");
-  Serial.print(gyroOrientation[0],6);
-  Serial.print("\t");
-  Serial.print(gyroOrientation[1],6);
-  Serial.print("\t");
-  Serial.print(gyroOrientation[2],6);
-  Serial.print("\t");
-  Serial.print("\t");
-  Serial.print(anglesT[0],6);
-  Serial.print("\t");
-  Serial.print(anglesT[1],6);
-  Serial.print("\t");
-  Serial.print(anglesT[2],6);
-  Serial.print("\t");
-  Serial.println(dt,6);
 }
 
 void getIMU(){ 
@@ -360,7 +369,11 @@ void GetCommand() {
     uint8_t mode = Serial.read();
 
     if (mode == 'r'){
-      getIMU();
+      Serial.print(theta_pitch,6);
+      Serial.print("\t");
+      Serial.print(theta_roll,6);
+      Serial.print("\t");
+      Serial.println(theta_yaw,6);
     }
 
     if (mode == 'j') {
