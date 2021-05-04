@@ -15,25 +15,25 @@ MPU9250 IMU(Wire1,0x68);
 
 #define FE_MIN 260 //flex
 #define FE_MAX 480 //extend
-#define FE_HOME 400 //360
+#define FE_HOME 390 //380
 
 #define UR_MIN 320 //radial 320
 #define UR_MAX 510 //ulnar 490
 #define UR_HOME 440
 
-#define SP_MIN 180 //pronate 150
-#define SP_MAX 430 //supinate
-#define SP_HOME 280 //260
+#define SP_MIN 120 //pronate 180
+#define SP_MAX 480 //supinate 430
+#define SP_HOME 340 //280
 
-#define INDEX_MAX 2500
-#define MIDDLE_MAX 2500
-#define RING_MAX 2500
-#define THUMB_MAX 2500
+#define INDEX_MAX 1000//2500
+#define MIDDLE_MAX 1000
+#define RING_MAX 1000
+#define THUMB_MAX 1000
 
 #define SampleTime 10 // 100 Hz - How fast the encoders are read
 #define UpdateTime 20 // 50 Hz - How fast the motors are updating
-#define PrintTime 100 // 10 Hz - How fast we print to serial
-#define IMUReadTime 100 // 10 Hz - How fast we print to serial
+#define PrintTime 100 // 10 Hz 1- How fast we print to serial
+#define IMUSampleTime 50 // 100 Hz - How fast we sample the IMU in ms
 
 unsigned long CurrentTime;
 unsigned long LastSampleTime;
@@ -77,29 +77,32 @@ volatile int16_t enc1Count = JointPos[1];
 volatile int16_t enc2Count = JointPos[2];
 volatile int16_t enc3Count = JointPos[3];
 
-int16_t OneFPinch[5] = {2000, 0, 0, 1000, OPPOSE_MAX};
-int16_t TwoFPinch[5] = {2000, 2000, 0, 1500, OPPOSE_MAX};
-//int16_t OneFPinch[5] = {1000, 0, 0, 2000, 0};
-//int16_t TwoFPinch[5] = {1000, 1000, 0, 800, 0};
-int16_t Power[5] = {2000, 2000, 2000, 2000, OPPOSE_MAX};
+//int16_t OneFPinch[5] = {2000, 0, 0, 500, OPPOSE_MAX};
+//int16_t TwoFPinch[5] = {2000, 2000, 0, 1500, OPPOSE_MAX};
+//int16_t Power[5] = {2000, 2000, 2000, 2000, OPPOSE_MAX};
 int16_t KeyPinch[5] = {2000, 2000, 2000, 1000, OPPOSE_MAX};
 int16_t Pistol[5] = {0,2000, 2000, 0, 0};
 int16_t Point[5] = {0, 2000, 2000, 2000, OPPOSE_MAX};
 int16_t MidF[5] = {2000, 0, 2000, 2000, OPPOSE_MAX};
 int16_t ThumbUp[5] = {2000, 2000, 2000, 0, 0};
-bool command_received = false;
+
+int16_t OneFPinch[5] = {1000, 0, 0, 500, 0};
+int16_t TwoFPinch[5] = {1000, 1000, 0, 575, 0};
+int16_t Power[5] = {1000, 1000, 1000, 650, 0};
 
 float anglesT_1[] = {0,0,0};
 float anglesT[] = {0,0,0};
 bool initIMUCounter = true;
 float previousTimeIMU = 0;
 float CurrentTimeIMU = 0;
-float dt = 0.0;
 float theta_pitch = 0;
 float theta_roll = 0;
 float theta_yaw = 0;
-
+float dt = 0.0;
+bool armStationary = true;
 int status;
+uint8_t gripID = 0;
+uint8_t handCloseSpeed = 10;
 
 void setup() {
   sb.begin();
@@ -148,7 +151,6 @@ void loop() {
   GetJointPos(); // Sets the JointPos array, specifying the current position of all joint positions
   Move(); // commands motor motion
   //Print(); // prints output to serial
-//  Serial.println(imu_on);
   getArmOrientation();
 }
 
@@ -185,10 +187,11 @@ float CalibrateMagnetometer(float * magCalibrated){
   float mx = IMU.getMagX_uT();
   float my = IMU.getMagY_uT();
   float mz = IMU.getMagZ_uT();
-  float A[3][3] = {{0.9953, -0.0146, 0.0201},
-                   {-0.0146, 1.0135, 0.0253},
-                   {0.0201, 0.0253, 0.9926}};
-  float b[]= {57.4634, 78.6249, 9.6638};
+  float A[3][3] = {{0.9932,   -0.0120,    0.0243},
+                   {-0.0120,    1.0106,    0.0184},
+                   {0.0243,    0.0184,    0.9974}};
+//  float b[]= {57.4634, 78.6249, 9.6638};
+  float b[]= {52.8039,   92.1576,  -20.8409};
   float mag_uncalib[] = {mx, my, mz};
   float mag_minus_bias[] = {0,0,0};
   for (int i = 0; i < 3; i++) {
@@ -204,27 +207,27 @@ float CalibrateMagnetometer(float * magCalibrated){
   }
   float memory = mag_calib[1];
   magCalibrated[1] = mag_calib[0];
-  magCalibrated[0] = memory;
+  magCalibrated[0] = mag_calib[1];
   magCalibrated[2] = -mag_calib[2];
 }
   
 float getArmOrientation(){
-  CurrentTimeIMU = micros()/1000000.0;
+  CurrentTimeIMU = micros()/1000000.0; // in seconds
 //  CurrentTimeIMU = millis();
   if (initIMUCounter){
     previousTimeIMU = CurrentTimeIMU;
     initIMUCounter = false;
     }
-  dt = (CurrentTimeIMU - previousTimeIMU);
-  if (dt >= IMUReadTime/1000.0){
+  dt = (CurrentTimeIMU - previousTimeIMU);// in seconds
+  if (dt >= IMUSampleTime/1000.0){
+//      Serial.print(dt, 6);
+//      Serial.print('\t');
+//      Serial.println(IMUSampleTime/1000.0, 6);
     previousTimeIMU = CurrentTimeIMU;
-    
     IMU.readSensor();
-    
     float gy = IMU.getGyroX_rads();
     float gx = IMU.getGyroY_rads();
     float gz = IMU.getGyroZ_rads();
-  
     // Gyro Angles
     float gyroOrientation[3]={0,0,0};
     float gyroData[3]={gx,gy,gz};
@@ -244,38 +247,29 @@ float getArmOrientation(){
     OrientationFromAccelerometer(accelOrientation);
   
     // Complementary Filter
-    float G = 0.9;
-    float A = 0.1;
+    float G = 0.8;
+    float A = 0.2;
     
     for (int j = 0; j < 3; j++) {
       anglesT[j] = (anglesT_1[j] + gyroOrientation[j])*G + A*accelOrientation[j];
       anglesT_1[j] = anglesT[j];
     }
-    theta_roll = anglesT[0]*(PI/180.0);
-    theta_pitch = anglesT[1]*(PI/180.0);
-
+  
+    theta_pitch = anglesT[1]* (PI/180.0);
+    theta_roll = anglesT[0] * (PI/180.0);
+  
     float x_heading = mx * cos(theta_roll) + mz * (sin(theta_roll));
     float y_heading = mx * (sin(theta_roll) * sin(theta_pitch)) + my * cos(theta_pitch) - mz * (
-                cos(theta_roll) * sin(theta_pitch));
-    theta_roll = theta_roll * (180 / PI);
-    theta_pitch = theta_pitch * (180 / PI);
-    theta_yaw = atan2(y_heading, x_heading) * (180 / PI);
-  
+                  cos(theta_roll) * sin(theta_pitch));
+    if (theta_yaw !=0){
+      theta_yaw = 0.9*theta_yaw + 0.1*(atan2(y_heading, x_heading) * (180 / PI));
+    }
+    else{
+      theta_yaw = atan2(y_heading, x_heading) * (180 / PI);
+      }
     
-//    Serial.print(accelOrientation[0]);
-//    Serial.print("\t");
-//    Serial.print(accelOrientation[1]);
-//    Serial.print("\t");
-//    Serial.print(accelOrientation[2]);
-//    Serial.print("\t");
-//    Serial.print("\t");
-//    Serial.print(gyroOrientation[0],6);
-//    Serial.print("\t");
-//    Serial.print(gyroOrientation[1],6);
-//    Serial.print("\t");
-//    Serial.print(gyroOrientation[2],6);
-//    Serial.print("\t");
-//    Serial.print("\t");
+    theta_pitch = theta_pitch * (180.0/PI);
+    theta_roll = theta_roll * (180.0/PI);
   }
 }
 
@@ -305,14 +299,17 @@ void getIMU(){
 }
 
 void Move() {
+  int jointsToMove = 0;
   if (CurrentTime - LastUpdateTime >= UpdateTime) {
     for (uint8_t i = 0; i < 8; i++) {
       if (i < 4) {
         dir[i] = JointPos[i] - DesiredPositions[i] < 1 ? 1 : 0;
 
         uint16_t dev = abs(JointPos[i] - DesiredPositions[i]);
-        if (dev > Error)
+        if (dev > Error){
           JointVel[i] = MAP(dev, 0, ROI, minV, maxV);
+          jointsToMove++;
+        }
         else
           JointVel[i] = 0;
 
@@ -323,13 +320,21 @@ void Move() {
         }
       }
       else {
-      if (JointPos[i] != DesiredPositions[i])
+      if (JointPos[i] != DesiredPositions[i]){
           sb.setPWM(JointPins[i], 0, JointPos[i]);
+          if (abs(JointPos[i] - DesiredPositions[i]) > 10)
+            jointsToMove++;
+        }
       }
-
     }
     delayMicroseconds(500);
     LastUpdateTime = CurrentTime;
+    if (jointsToMove == 0){
+        armStationary = true;
+      }
+     else{
+      armStationary = false;
+      }
   }
 }
 
@@ -364,8 +369,7 @@ void Print() {
 
 void GetCommand() {
   if (Serial.available()) {
-//    command_received = true;
-//    IMU.disableDataReadyInterrupt();
+    
     uint8_t mode = Serial.read();
 
     if (mode == 'r'){
@@ -376,7 +380,31 @@ void GetCommand() {
       Serial.println(theta_yaw,6);
     }
 
-    if (mode == 'j') {
+    //close hand
+    else if (mode == 'c'){
+      Serial.print(theta_pitch,6);
+      Serial.print("\t");
+      Serial.print(theta_roll,6);
+      Serial.print("\t");
+      Serial.println(theta_yaw,6);
+      for (uint8_t i = 0; i <= gripID; i++){
+          DesiredPositions[i] = CONSTRAIN(DesiredPositions[i] + handCloseSpeed,0,MaxPos[i]);
+        }
+      }
+
+    //open hand
+    else if (mode == 'o'){
+      Serial.print(theta_pitch,6);
+      Serial.print("\t");
+      Serial.print(theta_roll,6);
+      Serial.print("\t");
+      Serial.println(theta_yaw,6);
+      for (uint8_t i = 0; i <= gripID; i++){
+          DesiredPositions[i] = CONSTRAIN(DesiredPositions[i] - handCloseSpeed,0,MaxPos[i]);
+        }
+      }
+
+    else if (mode == 'j') {
       uint8_t jointID  = Serial.parseInt();
       int16_t StepTo = Serial.parseInt();
       
@@ -400,7 +428,7 @@ void GetCommand() {
     }
     
     else if (mode == 'g') {
-      uint8_t gripID  = Serial.parseInt();
+      gripID  = Serial.parseInt();
       uint8_t apperture = Serial.parseInt();
       int16_t *pointToArray;
       switch (gripID) {
@@ -434,14 +462,25 @@ void GetCommand() {
       
       for (uint8_t i = 0; i < 4; i ++){
         if (DesiredPositions[5] != HomePos[5])
-          DesiredPositions[i] = CONSTRAIN(*(pointToArray + i)* apperture/255.0 + DesiredPositions[i],MinPos[i],MaxPos[i]);
+        {
+          if (i == 3)
+            DesiredPositions[i] = CONSTRAIN(*(pointToArray + i) + DesiredPositions[i],MinPos[i],MaxPos[i]);
+          else
+            DesiredPositions[i] = CONSTRAIN(*(pointToArray + i)* apperture/255.0 + DesiredPositions[i],MinPos[i],MaxPos[i]);
+          }
+          
         else
-          DesiredPositions[i] = CONSTRAIN(*(pointToArray + i) * apperture/255.0,MinPos[i],MaxPos[i]);
+        {
+          if (i == 3)
+            DesiredPositions[i] = CONSTRAIN(*(pointToArray + i),MinPos[i],MaxPos[i]);
+          else
+            DesiredPositions[i] = CONSTRAIN(*(pointToArray + i) * apperture/255.0,MinPos[i],MaxPos[i]);
+        }
       }
-      DesiredPositions[4] = MaxPos[4];
-        
-      if (PrevPositions[4] != DesiredPositions[4])
-          DesiredPositions[3] = getEncoderVal(3) + OpposeFactor();
+      //DesiredPositions[4] = MaxPos[4];
+//        
+//      if (PrevPositions[4] != DesiredPositions[4])
+//          DesiredPositions[3] = getEncoderVal(3) + OpposeFactor();
         
     }
 
